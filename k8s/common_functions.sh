@@ -38,22 +38,13 @@ restart_pod() {
     local pod=$1
     local namespace=$2
     local timeout=${3:-30}
-    
+
+    # Nếu pod không còn tồn tại (có thể đã được xóa bởi process khác) thì coi như không cần restart
     if ! pod_exists "$pod" "$namespace"; then
-        local elapsed=0
-        while [ $elapsed -lt $timeout ]; do
-            if pod_exists "$pod" "$namespace"; then
-                local new_phase=$(get_pod_phase "$pod" "$namespace")
-                if [ "$new_phase" = "Running" ] || [ "$new_phase" = "Pending" ]; then
-                    return 0
-                fi
-            fi
-            sleep 2
-            elapsed=$((elapsed + 2))
-        done
-        return 1
+        return 0
     fi
-    
+
+    # Nếu pod đang terminating thì đợi nó terminate xong trước khi tiếp tục
     if is_pod_terminating "$pod" "$namespace"; then
         local elapsed=0
         while [ $elapsed -lt $timeout ] && pod_exists "$pod" "$namespace"; do
@@ -61,31 +52,27 @@ restart_pod() {
             elapsed=$((elapsed + 2))
         done
     fi
-    
+
+    # Xóa pod, không cần chờ pod mới cùng tên vì Deployment sẽ tạo pod tên khác
     kubectl delete pod "$pod" -n "$namespace" --wait=false >/dev/null 2>&1 || true
-    
+
+    # Chờ tới khi pod cũ biến mất hoàn toàn
     local elapsed=0
     while [ $elapsed -lt $timeout ]; do
-        if pod_exists "$pod" "$namespace"; then
-            local new_phase=$(get_pod_phase "$pod" "$namespace")
-            if [ "$new_phase" = "Running" ] || [ "$new_phase" = "Pending" ]; then
-                return 0
-            fi
+        if ! pod_exists "$pod" "$namespace"; then
+            # Pod cũ đã biến mất -> coi như restart đã được trigger thành công
+            return 0
         fi
         sleep 2
         elapsed=$((elapsed + 2))
     done
-    
+
+    # Nếu sau timeout pod cũ vẫn còn thì coi như restart thất bại
     if pod_exists "$pod" "$namespace"; then
-        local final_phase=$(get_pod_phase "$pod" "$namespace")
-        if [ "$final_phase" = "Running" ] || [ "$final_phase" = "Pending" ]; then
-            return 0
-        else
-            return 1
-        fi
-    else
         return 1
     fi
+
+    return 0
 }
 
 restart_pods_parallel() {
@@ -185,10 +172,12 @@ restart_group_pods() {
     > "$temp_pods_file"
     
     for pattern; do
-        local found_pods=$(get_pods_by_pattern "$pattern" "$namespace" 2>/dev/null || true)
-        if [ -n "$found_pods" ] && [ "$found_pods" != "" ]; then
-            printf "%s" "$found_pods" >> "$temp_pods_file" 2>/dev/null || true
-            printf "\n" >> "$temp_pods_file" 2>/dev/null || true
+        local found_pods
+        found_pods=$(get_pods_by_pattern "$pattern" "$namespace" 2>/dev/null || true)
+        if [ -n "$found_pods" ]; then
+            printf "%s\n" "$found_pods" >> "$temp_pods_file" 2>/dev/null || true
+        else
+            echo "  ⚠ No pods found for pattern '$pattern' in namespace '$namespace'" 
         fi
     done
     
