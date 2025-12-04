@@ -127,6 +127,52 @@ restart_pod() {
     fi
 }
 
+restart_pods_parallel() {
+    local pods="$1"
+    local namespace=$2
+    local timeout=${3:-30}
+    
+    # Tạo temp directory để lưu output và kết quả của mỗi pod
+    local temp_dir=$(mktemp -d 2>/dev/null || echo "/tmp/restart_pods_$$")
+    
+    # Thu thập và normalize pod names vào file
+    printf "%s" "$pods" | while IFS= read -r pod || [ -n "$pod" ]; do
+        pod=$(printf "%s" "$pod" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -d '\n\r')
+        [ -z "$pod" ] && continue
+        echo "$pod" >> "$temp_dir/pod_list"
+    done
+    
+    # Khởi động restart cho mỗi pod trong background
+    while IFS= read -r pod; do
+        [ -z "$pod" ] && continue
+        (
+            restart_pod "$pod" "$namespace" "$timeout" > "$temp_dir/${pod}.log" 2>&1
+            echo $? > "$temp_dir/${pod}.result"
+        ) &
+    done < "$temp_dir/pod_list"
+    
+    # Đợi tất cả background jobs hoàn thành
+    wait
+    
+    # Hiển thị output và đếm kết quả
+    local restarted=0
+    local failed=0
+    while IFS= read -r pod; do
+        [ -z "$pod" ] && continue
+        
+        [ -f "$temp_dir/${pod}.log" ] && cat "$temp_dir/${pod}.log"
+        
+        if [ -f "$temp_dir/${pod}.result" ]; then
+            [ "$(cat "$temp_dir/${pod}.result")" = "0" ] && restarted=$((restarted + 1)) || failed=$((failed + 1))
+        else
+            failed=$((failed + 1))
+        fi
+    done < "$temp_dir/pod_list"
+    
+    rm -rf "$temp_dir"
+    echo "$restarted $failed"
+}
+
 restart_group_pods() {
     local step_num=$1
     local group_name=$2
@@ -137,30 +183,32 @@ restart_group_pods() {
     echo ""
     echo "Step $step_num: Restarting $group_name pods..."
     
-    local pods=""
+    # Thu thập pods từ tất cả patterns
+    local all_pods=""
     for pattern; do
-        pods="$pods$(get_pods_by_pattern "$pattern" "$namespace")\n"
+        local found_pods=$(get_pods_by_pattern "$pattern" "$namespace")
+        if [ -n "$found_pods" ]; then
+            all_pods="$all_pods$found_pods\n"
+        fi
     done
-    pods=$(echo "$pods" | grep -v '^$' | sort -u)
     
-    if [ -z "$pods" ]; then
+    # Normalize: loại bỏ dòng trống, trim whitespace, sort, loại bỏ duplicate
+    all_pods=$(printf "%s" "$all_pods" | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sort -u)
+    
+    if [ -z "$all_pods" ]; then
         echo "  ⚠ No pods found for $group_name"
         return
     fi
     
-    local pod_count=$(echo "$pods" | wc -l | tr -d ' ')
+    local pod_count=$(printf "%s" "$all_pods" | grep -c . || echo "0")
     echo "  ✓ Found $pod_count pod(s):"
-    echo "$pods" | sed 's/^/    - /'
+    printf "%s" "$all_pods" | sed 's/^/    - /'
+    echo ""
     
-    local restarted=0
-    local failed=0
-    for pod in $pods; do
-        if restart_pod "$pod" "$namespace"; then
-            restarted=$((restarted + 1))
-        else
-            failed=$((failed + 1))
-        fi
-    done
+    # Restart pods song song
+    local result=$(restart_pods_parallel "$all_pods" "$namespace" "$wait_time")
+    local restarted=$(echo "$result" | awk '{print $1}')
+    local failed=$(echo "$result" | awk '{print $2}')
     
     echo "  ✓ $group_name: $restarted restarted, $failed failed"
     if [ $wait_time -gt 0 ]; then
@@ -175,4 +223,3 @@ show_pod_status() {
     echo "Current pod status:"
     kubectl get pods -n "$namespace" | grep -E "$pattern" || echo "  (No pods found)"
 }
-
