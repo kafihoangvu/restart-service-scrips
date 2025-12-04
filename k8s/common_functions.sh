@@ -12,7 +12,7 @@ countdown() {
 get_pods_by_pattern() {
     local pattern=$1
     local namespace=$2
-    kubectl get pods -n "$namespace" --no-headers 2>/dev/null | awk '{print $1}' | grep -E "$pattern" || true
+    kubectl get pods -n "$namespace" --no-headers 2>/dev/null 2>&1 | awk '{print $1}' 2>/dev/null | grep -E "$pattern" 2>/dev/null || true
 }
 
 get_pod_phase() {
@@ -154,10 +154,10 @@ restart_pods_parallel() {
     local last_line_count=0
     
     if [ "$total_pods" -eq 0 ] 2>/dev/null; then
-        wait
+        wait 2>/dev/null || true
         echo "0 0"
-        rm -rf "$temp_dir"
-        return
+        rm -rf "$temp_dir" 2>/dev/null || true
+        return 0
     fi
     
     echo "  Restarting $total_pods pod(s) in parallel..."
@@ -224,10 +224,10 @@ restart_group_pods() {
     > "$temp_pods_file"
     
     for pattern; do
-        local found_pods=$(get_pods_by_pattern "$pattern" "$namespace")
-        if [ -n "$found_pods" ]; then
-            printf "%s" "$found_pods" >> "$temp_pods_file"
-            printf "\n" >> "$temp_pods_file"
+        local found_pods=$(get_pods_by_pattern "$pattern" "$namespace" 2>/dev/null || true)
+        if [ -n "$found_pods" ] && [ "$found_pods" != "" ]; then
+            printf "%s" "$found_pods" >> "$temp_pods_file" 2>/dev/null || true
+            printf "\n" >> "$temp_pods_file" 2>/dev/null || true
         fi
     done
     
@@ -240,27 +240,34 @@ restart_group_pods() {
     
     rm -f "$temp_pods_file"
     
-    if [ ! -s "$temp_normalized" ]; then
-        echo "  ⚠ No pods found for $group_name"
-        rm -f "$temp_normalized"
-        return
+    if [ ! -s "$temp_normalized" ] 2>/dev/null; then
+        echo "  ⚠ No pods found for $group_name, skipping..."
+        rm -f "$temp_normalized" 2>/dev/null || true
+        return 0
     fi
     
-    local pod_count=$(wc -l < "$temp_normalized" | tr -d ' ')
+    local pod_count=$(wc -l < "$temp_normalized" 2>/dev/null | tr -d ' ' || echo "0")
+    pod_count=${pod_count:-0}
+    
+    if [ "$pod_count" -eq 0 ] 2>/dev/null; then
+        echo "  ⚠ No pods found for $group_name, skipping..."
+        rm -f "$temp_normalized" 2>/dev/null || true
+        return 0
+    fi
     
     echo "  ✓ Found $pod_count pod(s):"
-    cat "$temp_normalized" | while IFS= read -r pod; do
+    cat "$temp_normalized" 2>/dev/null | while IFS= read -r pod || [ -n "$pod" ]; do
         [ -z "$pod" ] && continue
         pod=$(printf "%s" "$pod" | tr -d '\n\r')
         [ -n "$pod" ] && echo "    - $pod"
-    done
+    done || true
     echo ""
     
-    local result=$(restart_pods_parallel "$temp_normalized" "$namespace" "$wait_time")
-    local restarted=$(echo "$result" | awk '{print $1}')
-    local failed=$(echo "$result" | awk '{print $2}')
+    local result=$(restart_pods_parallel "$temp_normalized" "$namespace" "$wait_time" 2>/dev/null || echo "0 0")
+    local restarted=$(echo "$result" | awk '{print $1}' 2>/dev/null || echo "0")
+    local failed=$(echo "$result" | awk '{print $2}' 2>/dev/null || echo "0")
     
-    rm -f "$temp_normalized"
+    rm -f "$temp_normalized" 2>/dev/null || true
     
     echo "  ✓ $group_name: $restarted restarted, $failed failed"
     if [ $wait_time -gt 0 ]; then
