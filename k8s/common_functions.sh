@@ -38,31 +38,23 @@ restart_pod() {
     local pod=$1
     local namespace=$2
     local timeout=${3:-30}
-    local progress_file="${4:-}"
     
     if ! pod_exists "$pod" "$namespace"; then
-        [ -n "$progress_file" ] && echo "[$pod] Waiting for recreation..." >> "$progress_file"
         local elapsed=0
         while [ $elapsed -lt $timeout ]; do
             if pod_exists "$pod" "$namespace"; then
                 local new_phase=$(get_pod_phase "$pod" "$namespace")
                 if [ "$new_phase" = "Running" ] || [ "$new_phase" = "Pending" ]; then
-                    [ -n "$progress_file" ] && echo "[$pod] ✓ Recreated ($new_phase)" >> "$progress_file"
                     return 0
                 fi
             fi
             sleep 2
             elapsed=$((elapsed + 2))
         done
-        [ -n "$progress_file" ] && echo "[$pod] ✗ Timeout" >> "$progress_file"
         return 1
     fi
     
-    local phase=$(get_pod_phase "$pod" "$namespace")
-    [ -n "$progress_file" ] && echo "[$pod] Status: $phase, deleting..." >> "$progress_file"
-    
     if is_pod_terminating "$pod" "$namespace"; then
-        [ -n "$progress_file" ] && echo "[$pod] Already terminating, waiting..." >> "$progress_file"
         local elapsed=0
         while [ $elapsed -lt $timeout ] && pod_exists "$pod" "$namespace"; do
             sleep 2
@@ -70,23 +62,13 @@ restart_pod() {
         done
     fi
     
-    if kubectl delete pod "$pod" -n "$namespace" --wait=false >/dev/null 2>&1; then
-        [ -n "$progress_file" ] && echo "[$pod] Deleted, waiting for recreation..." >> "$progress_file"
-    elif ! pod_exists "$pod" "$namespace"; then
-        [ -n "$progress_file" ] && echo "[$pod] Already deleted, waiting for recreation..." >> "$progress_file"
-    fi
+    kubectl delete pod "$pod" -n "$namespace" --wait=false >/dev/null 2>&1 || true
     
     local elapsed=0
-    local last_status=""
     while [ $elapsed -lt $timeout ]; do
         if pod_exists "$pod" "$namespace"; then
             local new_phase=$(get_pod_phase "$pod" "$namespace")
-            if [ "$new_phase" != "$last_status" ]; then
-                [ -n "$progress_file" ] && echo "[$pod] Status: $new_phase" >> "$progress_file"
-                last_status="$new_phase"
-            fi
             if [ "$new_phase" = "Running" ] || [ "$new_phase" = "Pending" ]; then
-                [ -n "$progress_file" ] && echo "[$pod] ✓ Recreated ($new_phase)" >> "$progress_file"
                 return 0
             fi
         fi
@@ -97,14 +79,11 @@ restart_pod() {
     if pod_exists "$pod" "$namespace"; then
         local final_phase=$(get_pod_phase "$pod" "$namespace")
         if [ "$final_phase" = "Running" ] || [ "$final_phase" = "Pending" ]; then
-            [ -n "$progress_file" ] && echo "[$pod] ✓ Recreated ($final_phase)" >> "$progress_file"
             return 0
         else
-            [ -n "$progress_file" ] && echo "[$pod] ✗ Timeout (status: $final_phase)" >> "$progress_file"
             return 1
         fi
     else
-        [ -n "$progress_file" ] && echo "[$pod] ✗ Timeout (not found)" >> "$progress_file"
         return 1
     fi
 }
@@ -115,9 +94,6 @@ restart_pods_parallel() {
     local timeout=${3:-30}
     
     local temp_dir=$(mktemp -d 2>/dev/null || echo "/tmp/restart_pods_$$")
-    local progress_file="$temp_dir/progress"
-    > "$progress_file"
-    
     local pod_list_file="$temp_dir/pod_list"
     > "$pod_list_file"
     
@@ -141,7 +117,7 @@ restart_pods_parallel() {
         [ -z "$pod" ] && continue
         
         (
-            restart_pod "$pod" "$namespace" "$timeout" "$progress_file" > "$temp_dir/${pod}.log" 2>&1
+            restart_pod "$pod" "$namespace" "$timeout" > "$temp_dir/${pod}.log" 2>&1
             echo $? > "$temp_dir/${pod}.result"
         ) &
     done < "$pod_list_file"
@@ -149,9 +125,6 @@ restart_pods_parallel() {
     local total_pods=$(wc -l < "$pod_list_file" 2>/dev/null | tr -d ' \n\r')
     total_pods=$(echo "$total_pods" | grep -E '^[0-9]+$' || echo "0")
     total_pods=$((total_pods + 0))
-    
-    local completed=0
-    local last_line_count=0
     
     if [ "$total_pods" -eq 0 ] 2>/dev/null; then
         wait 2>/dev/null || true
