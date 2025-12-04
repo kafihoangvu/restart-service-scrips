@@ -235,21 +235,6 @@ restart_group_pods() {
     if [ $wait_time -gt 0 ]; then
         countdown "$wait_time" "Stabilizing $group_name pods"
     fi
-    
-    # Hiển thị trạng thái health sau khi stabilizing (Running/Ready) cho toàn bộ patterns trong group
-    if [ "$restarted" -gt 0 ] 2>/dev/null; then
-        local combined_pattern=""
-        for pattern; do
-            if [ -z "$combined_pattern" ]; then
-                combined_pattern="$pattern"
-            else
-                combined_pattern="$combined_pattern|$pattern"
-            fi
-        done
-        if [ -n "$combined_pattern" ]; then
-            show_pod_status "$combined_pattern" "$namespace"
-        fi
-    fi
 }
 
 show_pod_status() {

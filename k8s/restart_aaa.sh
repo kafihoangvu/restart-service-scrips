@@ -6,3 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${0}")" && pwd)"
 
 restart_group_pods 1 "AAA" "kx-customers-uat" 30 \
   "^aaa" 
+
+echo ""
+echo "=========================================="
+echo "FINAL POD STATUS"
+echo "=========================================="
+
+show_pod_status "^aaa" "kx-customers-uat"

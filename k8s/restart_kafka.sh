@@ -15,3 +15,20 @@ restart_group_pods 3 "Domain Common" "kx-customers-uat" 30 \
   "^aaa" \
   "^notification" \
   "^configuration"
+
+echo ""
+echo "=========================================="
+echo "FINAL POD STATUS"
+echo "=========================================="
+
+echo ""
+echo "[Kafka - kafka-data-uat]"
+show_pod_status "^kafka" "kafka-data-uat"
+
+echo ""
+echo "[Domain Business - kx-customers-uat]"
+show_pod_status "^user-utilities|^asset-realtime" "kx-customers-uat"
+
+echo ""
+echo "[Domain Common - kx-customers-uat]"
+show_pod_status "^aaa|^notification|^configuration" "kx-customers-uat"
