@@ -160,36 +160,13 @@ restart_pods_parallel() {
         return 0
     fi
     
-    echo "  Restarting $total_pods pod(s) in parallel..."
-    while [ "$completed" -lt "$total_pods" ] 2>/dev/null; do
-        sleep 2
-        completed=$(grep -c "✓\|✗" "$progress_file" 2>/dev/null || echo "0")
-        completed=$(echo "$completed" | tr -d ' \n\r')
-        completed=$(echo "$completed" | grep -E '^[0-9]+$' || echo "0")
-        completed=$((completed + 0))
-        
-        local current_lines=$(wc -l < "$progress_file" 2>/dev/null | tr -d ' \n\r')
-        current_lines=$(echo "$current_lines" | grep -E '^[0-9]+$' || echo "0")
-        current_lines=$((current_lines + 0))
-        if [ "$current_lines" -gt "$last_line_count" ] 2>/dev/null; then
-            tail -n $((current_lines - last_line_count)) "$progress_file" 2>/dev/null | while IFS= read -r line; do
-                echo "  $line"
-            done
-            last_line_count=$current_lines
-        fi
-        
-        if [ "$completed" -lt "$total_pods" ] 2>/dev/null; then
-            local progress_percent=$((completed * 100 / total_pods))
-            printf "  Progress: [%d/%d] %d%%\r" "$completed" "$total_pods" "$progress_percent"
-        fi
-    done
-    
     wait
-    echo ""
     
-    echo ""
     local restarted=0
     local failed=0
+    local restarted_pods=""
+    local failed_pods=""
+    
     while IFS= read -r pod || [ -n "$pod" ]; do
         [ -z "$pod" ] && continue
         pod=$(printf "%s" "$pod" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -d '\n\r')
@@ -198,13 +175,24 @@ restart_pods_parallel() {
         if [ -f "$temp_dir/${pod}.result" ]; then
             if [ "$(cat "$temp_dir/${pod}.result")" = "0" ]; then
                 restarted=$((restarted + 1))
+                restarted_pods="$restarted_pods$pod "
             else
                 failed=$((failed + 1))
+                failed_pods="$failed_pods$pod "
             fi
         else
             failed=$((failed + 1))
+            failed_pods="$failed_pods$pod "
         fi
     done < "$pod_list_file"
+    
+    if [ $restarted -gt 0 ]; then
+        echo "  ✓ Successfully restarted ($restarted): $(echo "$restarted_pods" | sed 's/ $//')"
+    fi
+    
+    if [ $failed -gt 0 ]; then
+        echo "  ✗ Failed ($failed): $(echo "$failed_pods" | sed 's/ $//')"
+    fi
     
     rm -rf "$temp_dir"
     echo "$restarted $failed"
