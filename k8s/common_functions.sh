@@ -39,12 +39,14 @@ restart_pod() {
     local namespace=$2
     local timeout=${3:-30}
 
-    # Nếu pod không còn tồn tại (có thể đã được xóa bởi process khác) thì coi như không cần restart
+    # Nếu pod không còn tồn tại (có thể đã được xóa bởi process khác) thì bỏ qua, không coi là lỗi
     if ! pod_exists "$pod" "$namespace"; then
+        echo "  ⚠ Pod $pod not found in namespace $namespace, skipping"
         return 0
     fi
 
-    # Nếu pod đang terminating thì đợi nó terminate xong trước khi tiếp tục
+    # Nếu pod đang terminating thì đợi nó terminate xong trước khi tiếp tục,
+    # nhưng không fail nếu sau timeout vẫn còn (vì việc xóa có thể đang được xử lý bởi K8s)
     if is_pod_terminating "$pod" "$namespace"; then
         local elapsed=0
         while [ $elapsed -lt $timeout ] && pod_exists "$pod" "$namespace"; do
@@ -53,26 +55,20 @@ restart_pod() {
         done
     fi
 
-    # Xóa pod, không cần chờ pod mới cùng tên vì Deployment sẽ tạo pod tên khác
-    kubectl delete pod "$pod" -n "$namespace" --wait=false >/dev/null 2>&1 || true
-
-    # Chờ tới khi pod cũ biến mất hoàn toàn
-    local elapsed=0
-    while [ $elapsed -lt $timeout ]; do
-        if ! pod_exists "$pod" "$namespace"; then
-            # Pod cũ đã biến mất -> coi như restart đã được trigger thành công
-            return 0
-        fi
-        sleep 2
-        elapsed=$((elapsed + 2))
-    done
-
-    # Nếu sau timeout pod cũ vẫn còn thì coi như restart thất bại
-    if pod_exists "$pod" "$namespace"; then
-        return 1
+    # Thử xóa pod. Nếu lệnh xóa trả về thành công hoặc pod biến mất sau đó,
+    # chúng ta coi như restart đã được trigger thành công (Deployment/StatefulSet sẽ tự tạo lại pod).
+    if kubectl delete pod "$pod" -n "$namespace" --wait=false >/dev/null 2>&1; then
+        return 0
     fi
 
-    return 0
+    # Nếu lệnh delete fail, nhưng pod thực tế đã biến mất thì vẫn coi là thành công.
+    if ! pod_exists "$pod" "$namespace"; then
+        return 0
+    fi
+
+    # Lệnh delete fail và pod vẫn còn tồn tại -> coi là thất bại.
+    echo "  ✗ Failed to delete pod $pod in namespace $namespace"
+    return 1
 }
 
 restart_pods_parallel() {
@@ -222,6 +218,21 @@ restart_group_pods() {
     echo "  ✓ $group_name: $restarted restarted, $failed failed"
     if [ $wait_time -gt 0 ]; then
         countdown "$wait_time" "Stabilizing $group_name pods"
+    fi
+    
+    # Hiển thị trạng thái health sau khi stabilizing (Running/Ready) cho toàn bộ patterns trong group
+    if [ "$restarted" -gt 0 ] 2>/dev/null; then
+        local combined_pattern=""
+        for pattern; do
+            if [ -z "$combined_pattern" ]; then
+                combined_pattern="$pattern"
+            else
+                combined_pattern="$combined_pattern|$pattern"
+            fi
+        done
+        if [ -n "$combined_pattern" ]; then
+            show_pod_status "$combined_pattern" "$namespace"
+        fi
     fi
 }
 
