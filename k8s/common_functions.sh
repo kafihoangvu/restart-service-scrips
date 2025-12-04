@@ -158,12 +158,14 @@ restart_pods_parallel() {
     done < "$pod_list_file"
     
     # Hiển thị progress trong khi đợi
-    local total_pods=$(wc -l < "$pod_list_file" 2>/dev/null | tr -d ' ')
-    total_pods=${total_pods:-0}
+    local total_pods=$(wc -l < "$pod_list_file" 2>/dev/null | tr -d ' \n\r')
+    total_pods=$(echo "$total_pods" | grep -E '^[0-9]+$' || echo "0")
+    total_pods=$((total_pods + 0))
+    
     local completed=0
     local last_line_count=0
     
-    if [ "$total_pods" -eq 0 ]; then
+    if [ "$total_pods" -eq 0 ] 2>/dev/null; then
         wait
         echo "0 0"
         rm -rf "$temp_dir"
@@ -171,16 +173,19 @@ restart_pods_parallel() {
     fi
     
     echo "  Restarting $total_pods pod(s) in parallel..."
-    while [ "$completed" -lt "$total_pods" ]; do
+    while [ "$completed" -lt "$total_pods" ] 2>/dev/null; do
         sleep 2
         # Đếm số pods đã hoàn thành
         completed=$(grep -c "✓\|✗" "$progress_file" 2>/dev/null || echo "0")
-        completed=${completed:-0}
+        completed=$(echo "$completed" | tr -d ' \n\r')
+        completed=$(echo "$completed" | grep -E '^[0-9]+$' || echo "0")
+        completed=$((completed + 0))
         
         # Hiển thị progress mới
-        local current_lines=$(wc -l < "$progress_file" 2>/dev/null | tr -d ' ')
-        current_lines=${current_lines:-0}
-        if [ "$current_lines" -gt "$last_line_count" ]; then
+        local current_lines=$(wc -l < "$progress_file" 2>/dev/null | tr -d ' \n\r')
+        current_lines=$(echo "$current_lines" | grep -E '^[0-9]+$' || echo "0")
+        current_lines=$((current_lines + 0))
+        if [ "$current_lines" -gt "$last_line_count" ] 2>/dev/null; then
             tail -n $((current_lines - last_line_count)) "$progress_file" 2>/dev/null | while IFS= read -r line; do
                 echo "  $line"
             done
@@ -188,7 +193,7 @@ restart_pods_parallel() {
         fi
         
         # Hiển thị progress nếu chưa xong
-        if [ "$completed" -lt "$total_pods" ]; then
+        if [ "$completed" -lt "$total_pods" ] 2>/dev/null; then
             local progress_percent=$((completed * 100 / total_pods))
             printf "  Progress: [%d/%d] %d%%\r" "$completed" "$total_pods" "$progress_percent"
         fi
@@ -230,22 +235,32 @@ restart_group_pods() {
     shift 4
     
     echo ""
-    echo "Step $step_num: Restarting $group_name pods..."
+    echo "Step $step_num: Restarting $group_name pods in namespace $namespace"
     
     # Thu thập pods từ tất cả patterns vào temp file
+    echo "  Searching for pods..."
     local temp_pods_file=$(mktemp 2>/dev/null || echo "/tmp/pods_$$")
     > "$temp_pods_file"
+    local pattern_count=0
+    local found_count=0
     
     for pattern; do
-        local found_pods=$(get_pods_by_pattern "$pattern" "$namespace")
+        pattern_count=$((pattern_count + 1))
+        printf "  Checking pattern %d/%d: %s..." "$pattern_count" "$#" "$pattern"
+        local found_pods=$(get_pods_by_pattern "$pattern" "$namespace" 2>&1)
         if [ -n "$found_pods" ]; then
+            local pattern_pod_count=$(echo "$found_pods" | grep -c '^' || echo "0")
+            found_count=$((found_count + pattern_pod_count))
+            printf " found %d pod(s)\n" "$pattern_pod_count"
             printf "%s" "$found_pods" >> "$temp_pods_file"
             printf "\n" >> "$temp_pods_file"
+        else
+            printf " no pods found\n"
         fi
     done
     
     # Normalize: loại bỏ dòng trống, trim whitespace, sort, loại bỏ duplicate
-    # Đảm bảo mỗi pod trên một dòng riêng, không có trailing whitespace/newline
+    echo "  Normalizing pod list..."
     local temp_normalized=$(mktemp 2>/dev/null || echo "/tmp/pods_norm_$$")
     cat "$temp_pods_file" | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr -d '\r' | sort -u | while IFS= read -r pod || [ -n "$pod" ]; do
         pod=$(printf "%s" "$pod" | tr -d '\n\r')
@@ -262,7 +277,9 @@ restart_group_pods() {
     fi
     
     # Đếm và hiển thị pods
-    local pod_count=$(wc -l < "$temp_normalized" | tr -d ' ')
+    local pod_count=$(wc -l < "$temp_normalized" 2>/dev/null | tr -d ' \n\r')
+    pod_count=$(echo "$pod_count" | grep -E '^[0-9]+$' || echo "0")
+    pod_count=$((pod_count + 0))
     
     echo "  ✓ Found $pod_count pod(s):"
     cat "$temp_normalized" | while IFS= read -r pod; do
@@ -281,7 +298,8 @@ restart_group_pods() {
     
     echo "  ✓ $group_name: $restarted restarted, $failed failed"
     if [ $wait_time -gt 0 ]; then
-        countdown "$wait_time" "Stabilizing $group_name pods"
+        echo "  ⏳ Waiting ${wait_time}s for pods to stabilize..."
+        sleep "$wait_time"
     fi
 }
 
